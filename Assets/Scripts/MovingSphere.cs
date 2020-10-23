@@ -9,53 +9,136 @@ public class MovingSphere : MonoBehaviour
     float maxSpeed = 10f;
     //限制最大加速度
     [SerializeField, Range(0f, 100f)]
-    float maxAcceleration = 10f;
-    //限制最大区域
-    [SerializeField]
-    Rect allowedArea = new Rect(-5f, -5f, 10f, 10f);
-    //反弹力因子
-    [SerializeField, Range(0f, 1f)]
-    float bounciness = 0.5f;
-    Vector3 velocity;
+    float maxAcceleration = 10f, maxAirAcceleration = 1f;
+    [SerializeField, Range(0f, 10f)]
+    float jumpHeight = 2f;
+    [SerializeField, Range(0, 5)]
+    int maxAirJumps = 0;
+    [SerializeField, Range(0f, 90f)]
+    float maxGroundAngle = 40f;
+    int jumpPhase;
+    bool desiredJump;
+    Vector3 velocity, desiredVelocity;
+    Rigidbody body;
+    int groundContactCount;
+    bool onGround => groundContactCount > 0;
+    float minGroundDotProduct;
+    Vector3 contactNormal;
+    void OnValidate()
+    {
+        minGroundDotProduct = Mathf.Cos(maxGroundAngle * Mathf.Deg2Rad);
+    }
+    void Awake()
+    {
+        body = GetComponent<Rigidbody>();
+        OnValidate();
+    }
     void Update()
     {
         Vector2 playerInput;
         playerInput.x = Input.GetAxis("Horizontal");
         playerInput.y = Input.GetAxis("Vertical");
-        Vector3 desiredVelocity = new Vector3(playerInput.x, 0f, playerInput.y) * maxSpeed;
-        float maxSpeedChange = maxAcceleration * Time.deltaTime;
-        velocity.x = Mathf.MoveTowards(velocity.x, desiredVelocity.x, maxSpeedChange);
-        velocity.z = Mathf.MoveTowards(velocity.z, desiredVelocity.z, maxSpeedChange);
-        Vector3 displacement = velocity * Time.deltaTime;
-        Vector3 newPosition = transform.localPosition + displacement;
-        //if (!allowedArea.Contains(new Vector2(newPosition.x, newPosition.z)))
-        //{
-        //    newPosition.x = Mathf.Clamp(newPosition.x, allowedArea.xMin, allowedArea.xMax);
-        //    newPosition.z = Mathf.Clamp(newPosition.z, allowedArea.yMin, allowedArea.yMax);
-        //}
-        if (newPosition.x < allowedArea.xMin)
+        playerInput = Vector2.ClampMagnitude(playerInput, 1f);
+        desiredVelocity = new Vector3(playerInput.x, 0f, playerInput.y) * maxSpeed;
+        desiredJump |= Input.GetButtonDown("Jump");
+
+        GetComponent<Renderer>().material.SetColor(
+            "_Color", Color.white * (groundContactCount * 0.25f)
+        );
+    }
+
+    void FixedUpdate()
+    {
+        UpdateState();
+        AdjustVelocity();
+        if (desiredJump)
         {
-            newPosition.x = allowedArea.xMin;
-            velocity.x = -velocity.x * bounciness;
+            desiredJump = false;
+            Jump();
         }
-        else if (newPosition.x > allowedArea.xMax)
+        body.velocity = velocity;
+        ClearState();
+    }
+
+    void ClearState()
+    {
+        groundContactCount = 0;
+        contactNormal = Vector3.zero;
+    }
+
+    void UpdateState()
+    {
+        velocity = body.velocity;
+        if (onGround)
         {
-            newPosition.x = allowedArea.xMax;
-            velocity.x = -velocity.x * bounciness;
+            jumpPhase = 0;
+            if (groundContactCount > 1)
+            {
+                contactNormal.Normalize();
+            }
         }
-        if (newPosition.z < allowedArea.yMin)
+        else
         {
-            newPosition.z = allowedArea.yMin;
-            velocity.z = -velocity.z * bounciness;
+            contactNormal = Vector3.up;
         }
-        else if (newPosition.z > allowedArea.yMax)
+    }
+    void Jump()
+    {
+        if (onGround || jumpPhase < maxAirJumps)
         {
-            newPosition.z = allowedArea.yMax;
-            velocity.z = -velocity.z * bounciness;
+            jumpPhase += 1;
+            float jumpSpeed = Mathf.Sqrt(-2f * Physics.gravity.y * jumpHeight);
+            float alignedSpeed = Vector3.Dot(velocity, contactNormal);
+            if (alignedSpeed > 0f)
+            {
+                jumpSpeed = Mathf.Max(jumpSpeed - alignedSpeed, 0f);
+            }
+            velocity += contactNormal * jumpSpeed;
         }
-        transform.localPosition = newPosition;
-        //playerInput.Normalize();
-        //Vector2.ClampMagnitude(playerInput, 1f);
-        //transform.localPosition = new Vector3(playerInput.x, 0.5f, playerInput.y);
+    }
+
+    void OnCollisionEnter(Collision collision)
+    {
+        EvaluateCollision(collision);
+    }
+
+    void OnCollisionStay(Collision collision)
+    {
+        EvaluateCollision(collision);
+    }
+
+    void EvaluateCollision(Collision collision)
+    {
+        for (int i = 0; i < collision.contactCount; i++)
+        {
+            Vector3 normal = collision.GetContact(i).normal;
+            if (normal.y >= minGroundDotProduct)
+            {
+                groundContactCount += 1;
+                contactNormal += normal;
+            }
+        }
+    }
+
+    Vector3 ProjectOnContactPlane(Vector3 vector)
+    {
+        return vector - contactNormal * Vector3.Dot(vector, contactNormal);
+    }
+
+    void AdjustVelocity()
+    {
+        Vector3 xAxis = ProjectOnContactPlane(Vector3.right).normalized;
+        Vector3 zAxis = ProjectOnContactPlane(Vector3.forward).normalized;
+
+        float currentX = Vector3.Dot(velocity, xAxis);
+        float currentZ = Vector3.Dot(velocity, zAxis);
+
+        float acceleration = onGround ? maxAcceleration : maxAirAcceleration;
+        float maxSpeedChange = acceleration * Time.deltaTime;
+        float newX =
+            Mathf.MoveTowards(currentX, desiredVelocity.x, maxSpeedChange);
+        float newZ =
+            Mathf.MoveTowards(currentZ, desiredVelocity.z, maxSpeedChange);
+        velocity += xAxis * (newX - currentX) + zAxis * (newZ - currentZ);
     }
 }
